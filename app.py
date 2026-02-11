@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Web UI for IoT Fleet Provisioning Demo."""
+"""
+Flask Web Server for IoT Fleet Provisioning Demo.
+
+Provides a REST API and web UI to:
+- Provision new IoT devices (claim cert → device cert)
+- Connect/disconnect devices via MQTT
+- Publish/subscribe to MQTT topics
+- Rotate device certificates (manual or automatic)
+- View device status and logs
+
+Authentication: Token-based (printed to console on startup).
+Set SKIP_AUTH=1 to disable auth (for Cloud9 preview proxy).
+"""
 import json, os, secrets, hmac
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -8,15 +20,15 @@ from device_client import DeviceClient
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET", secrets.token_hex(32))
 
-# 简单 token 认证 — 启动时生成，打印到终端
+# Token auth: generated at startup, printed to console for user to copy
 API_TOKEN = os.environ.get("API_TOKEN", secrets.token_urlsafe(24))
 
-devices = {}  # serial -> DeviceClient
-logs = {}     # serial -> [log entries]
+devices = {}  # serial -> DeviceClient instance
+logs = {}     # serial -> list of log messages (ring buffer, max 200)
 
 
 def check_auth():
-    """检查 API token（header 或 session 或 cookie）。"""
+    """Check API token from header, session, or cookie. Uses timing-safe comparison."""
     if session.get("authed"):
         return True
     token = request.headers.get("X-API-Token") or request.cookies.get("api_token") or ""
@@ -24,9 +36,11 @@ def check_auth():
 
 
 def get_device(serial):
+    """Get or create a DeviceClient instance for the given serial number."""
     if serial not in devices:
         logs[serial] = []
         def on_log(msg):
+            # Ring buffer: keep last 100 logs when exceeding 200
             logs[serial].append(msg)
             if len(logs[serial]) > 200:
                 logs[serial] = logs[serial][-100:]
@@ -36,7 +50,8 @@ def get_device(serial):
 
 @app.before_request
 def auth_check():
-    # Cloud9 内网环境，通过环境变量控制是否跳过认证
+    """Middleware: check auth before every request (unless SKIP_AUTH is set)."""
+    # SKIP_AUTH=1 disables auth for Cloud9 preview proxy (doesn't forward cookies)
     if os.environ.get("SKIP_AUTH"):
         return
     if request.endpoint in ("login", "do_login", "static"):
@@ -80,6 +95,7 @@ def index():
 
 @app.route("/api/provision", methods=["POST"])
 def provision():
+    """Provision a new device: create Thing + device certificate via Fleet Provisioning."""
     serial = request.json.get("serial", "").strip()
     if not serial:
         return jsonify({"error": "serial required"}), 400
@@ -93,6 +109,7 @@ def provision():
 
 @app.route("/api/rotate", methods=["POST"])
 def rotate():
+    """Rotate device certificate: get new cert, revoke old cert."""
     serial = request.json.get("serial", "").strip()
     if not serial:
         return jsonify({"error": "serial required"}), 400
@@ -106,6 +123,7 @@ def rotate():
 
 @app.route("/api/connect", methods=["POST"])
 def connect():
+    """Connect device to IoT Core via MQTT (mTLS with device cert)."""
     serial = request.json.get("serial", "").strip()
     try:
         dev = get_device(serial)
@@ -117,6 +135,7 @@ def connect():
 
 @app.route("/api/disconnect", methods=["POST"])
 def disconnect():
+    """Disconnect device from MQTT."""
     serial = request.json.get("serial", "").strip()
     try:
         dev = get_device(serial)
@@ -128,6 +147,7 @@ def disconnect():
 
 @app.route("/api/publish", methods=["POST"])
 def publish():
+    """Publish message to MQTT topic. Topic must start with device/{serial}/ (ACL enforced)."""
     data = request.json
     serial = data.get("serial", "").strip()
     topic = data.get("topic", "").strip()
@@ -146,6 +166,7 @@ def publish():
 
 @app.route("/api/subscribe", methods=["POST"])
 def subscribe():
+    """Subscribe to MQTT topic. Topic must start with device/{serial}/ (ACL enforced)."""
     data = request.json
     serial = data.get("serial", "").strip()
     topic = data.get("topic", "").strip()
@@ -164,6 +185,7 @@ def subscribe():
 
 @app.route("/api/status", methods=["GET"])
 def status():
+    """Get device status and recent logs."""
     serial = request.args.get("serial", "").strip()
     if not serial or serial not in devices:
         return jsonify({"error": "device not found"}), 404
@@ -172,11 +194,13 @@ def status():
 
 @app.route("/api/devices", methods=["GET"])
 def list_devices():
+    """List all active device instances."""
     return jsonify({"devices": [d.get_status() for d in devices.values()]})
 
 
 @app.route("/api/auto_rotate", methods=["POST"])
 def auto_rotate():
+    """Start/stop automatic certificate rotation for a device."""
     data = request.json
     serial = data.get("serial", "").strip()
     action = data.get("action", "start")  # start / stop

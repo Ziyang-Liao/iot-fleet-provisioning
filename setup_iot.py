@@ -35,8 +35,13 @@ print(f"Account: {account_id}, Region: {REGION}, Endpoint: {endpoint}")
 
 # ============================================================
 # 1. IoT Policies
+#    - DevicePolicy: Attached to device certificates, controls MQTT access
+#    - ClaimPolicy: Attached to claim certificate, only allows provisioning
 # ============================================================
 
+# DevicePolicy: Fine-grained ACL for device MQTT operations
+# - Connect: client_id must match Thing name
+# - Publish/Subscribe/Receive: only device/{thingName}/* and $aws provisioning topics
 device_policy_doc = {
     "Version": "2012-10-17",
     "Statement": [
@@ -75,6 +80,9 @@ device_policy_doc = {
     ]
 }
 
+# ClaimPolicy: Minimal permissions for initial provisioning only
+# - Connect: any client_id (claim cert is shared across devices)
+# - Publish/Subscribe/Receive: only $aws provisioning topics
 claim_policy_doc = {
     "Version": "2012-10-17",
     "Statement": [
@@ -100,6 +108,7 @@ claim_policy_doc = {
 
 
 def create_or_update_policy(name, doc):
+    """Create IoT policy or update existing one (handles 5-version limit)."""
     try:
         iot.create_policy(policyName=name, policyDocument=json.dumps(doc))
         print(f"  Created policy: {name}")
@@ -119,6 +128,8 @@ create_or_update_policy(CLAIM_POLICY, claim_policy_doc)
 
 # ============================================================
 # 2. Pre-provisioning hook Lambda
+#    Validates device parameters before allowing provisioning.
+#    Returns allowProvisioning=true only if SerialNumber is provided.
 # ============================================================
 
 print("\n[2/5] Creating Pre-Provisioning Lambda...")
@@ -168,6 +179,10 @@ except lambda_client.exceptions.ResourceConflictException:
 
 # ============================================================
 # 3. Provisioning Template + IAM Role
+#    Template defines what resources to create when a device provisions:
+#    - Certificate (activate it)
+#    - Policy attachment (DevicePolicy)
+#    - Thing (named by SerialNumber, added to fleet-devices group)
 # ============================================================
 
 print("\n[3/5] Creating Provisioning Template...")
@@ -177,6 +192,7 @@ iot_trust = {
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "iot.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
 
+# IAM role for Fleet Provisioning: allows IoT Core to create/manage resources
 iot_role_policy = {
     "Version": "2012-10-17",
     "Statement": [{
@@ -206,6 +222,8 @@ except iam.exceptions.EntityAlreadyExistsException:
 
 iam.put_role_policy(RoleName=IOT_ROLE_NAME, PolicyName="IoTProvisionPolicy", PolicyDocument=json.dumps(iot_role_policy))
 
+# Provisioning template body: CloudFormation-like syntax
+# Parameters come from the device during provisioning
 template_body = {
     "Parameters": {
         "SerialNumber": {"Type": "String"},
@@ -262,12 +280,15 @@ except iot.exceptions.ResourceAlreadyExistsException:
 
 # ============================================================
 # 4. Claim Certificate (idempotent)
+#    Shared certificate used by all devices for initial provisioning.
+#    After provisioning, each device gets its own unique certificate.
 # ============================================================
 
 print("\n[4/5] Creating Claim Certificate...")
 
 
 def claim_cert_valid():
+    """Check if existing claim certificate is still active (skip recreation if so)."""
     if not os.path.exists(CONFIG_PATH):
         return False
     try:
@@ -314,6 +335,8 @@ else:
 
 # ============================================================
 # 5. Download Root CA
+#    Amazon Root CA is used to verify IoT Core server identity (TLS).
+#    This is the "trust anchor" for the mTLS connection.
 # ============================================================
 
 print("\n[5/5] Checking Root CA...")

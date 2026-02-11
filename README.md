@@ -1,54 +1,54 @@
 # AWS IoT Core Fleet Provisioning & Certificate Auto-Rotation Demo
 
-基于 AWS IoT Core Fleet Provisioning 实现设备证书自动轮换的完整方案，使用 X.509 客户端证书 + 私钥（mTLS）进行双向认证，包含 Web 测试界面。
+A complete solution for automatic device certificate rotation using AWS IoT Core Fleet Provisioning with mTLS (X.509 client certificate + private key) mutual authentication, including a web-based testing UI.
 
 ## Features
 
-- **mTLS 双向认证** — 设备使用 X.509 客户端证书 + 私钥与 IoT Core 建立 TLS 连接
-- **Fleet Provisioning** — 通过 Claim 证书自动注册设备并签发设备证书
-- **IoT Policy ACL** — 基于证书的细粒度 Topic 级别访问控制
-- **证书自动轮换** — 后台定时检查证书过期时间，到期前自动申请新证书、吊销旧证书
-- **Web 测试界面** — 实时 Dashboard，可视化操作 Provision / MQTT / 轮换全流程
+- **mTLS Mutual Authentication** — Devices connect to IoT Core using X.509 client certificates + private keys over TLS
+- **Fleet Provisioning** — Automatic device registration and certificate issuance via claim certificates
+- **IoT Policy ACL** — Certificate-based, fine-grained topic-level access control per device
+- **Auto Certificate Rotation** — Background thread monitors cert expiry and auto-rotates before expiration
+- **Web Test UI** — Real-time dashboard for provisioning, MQTT pub/sub, and rotation testing
 
-## 证书体系说明
+## Certificate Architecture
 
-本项目使用 X.509 证书 + 私钥实现 mTLS 双向认证，所有 MQTT 连接都通过 TLS 客户端证书验证身份：
+This project uses X.509 certificates + private keys for mTLS mutual authentication. All MQTT connections are authenticated via TLS client certificates:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    证书信任链                                 │
-│                                                             │
-│  Amazon Root CA (AmazonRootCA1.pem)                         │
-│  └── IoT Core 服务端证书 (自动，AWS管理)                      │
-│  └── Claim 证书 (claim.cert.pem + claim.key.pem)            │
-│       └── 用于 Fleet Provisioning 首次注册                    │
-│  └── 设备证书 (device.cert.pem + device.key.pem)             │
-│       └── 用于设备日常 MQTT 通信 + 证书轮换                    │
-└─────────────────────────────────────────────────────────────┘
+                        Certificate Trust Chain
+
+  Amazon Root CA (AmazonRootCA1.pem)
+  ├── IoT Core Server Certificate (managed by AWS, automatic)
+  ├── Claim Certificate (claim.cert.pem + claim.key.pem)
+  │     └── Used for Fleet Provisioning initial registration
+  └── Device Certificate (device.cert.pem + device.key.pem)
+        └── Used for daily MQTT communication + certificate rotation
 ```
 
-| 文件 | 类型 | 敏感性 | 用途 | 来源 |
-|------|------|--------|------|------|
-| `AmazonRootCA1.pem` | Root CA 公钥 | 公开 | 客户端验证 IoT Core 服务端身份 | [Amazon Trust](https://www.amazontrust.com/repository/) 公开下载 |
-| `claim.cert.pem` | Claim 客户端证书 | 敏感 | 设备首次注册时的临时 mTLS 身份 | `setup_iot.py` 调用 IoT API 创建 |
-| `claim.key.pem` | Claim 私钥 | 敏感 | 配合 Claim 证书完成 TLS 握手 | `setup_iot.py` 调用 IoT API 创建 |
-| `device.cert.pem` | 设备客户端证书 | 敏感 | 设备正常运行时的 mTLS 身份 | Fleet Provisioning 过程中 IoT Core 签发 |
-| `device.key.pem` | 设备私钥 | 敏感 | 配合设备证书完成 TLS 握手 | Fleet Provisioning 过程中设备端生成 |
+| File | Type | Sensitivity | Purpose | Source |
+|------|------|-------------|---------|--------|
+| `AmazonRootCA1.pem` | Root CA public key | Public | Client verifies IoT Core server identity | [Amazon Trust](https://www.amazontrust.com/repository/) public download |
+| `claim.cert.pem` | Claim client certificate | Sensitive | Temporary mTLS identity for initial device registration | Created by `setup_iot.py` via IoT API |
+| `claim.key.pem` | Claim private key | Sensitive | Paired with claim cert for TLS handshake | Created by `setup_iot.py` via IoT API |
+| `device.cert.pem` | Device client certificate | Sensitive | Device mTLS identity for normal operation | Issued by IoT Core during Fleet Provisioning |
+| `device.key.pem` | Device private key | Sensitive | Paired with device cert for TLS handshake | Generated on device during Fleet Provisioning |
 
-### mTLS 连接过程
+### mTLS Handshake Flow
 
 ```
 Device                                    IoT Core
   │                                          │
   │──── TLS ClientHello ────────────────────►│
-  │◄─── ServerHello + Server Cert ──────────│  (IoT Core 出示服务端证书)
+  │◄─── ServerHello + Server Cert ──────────│  (IoT Core presents server cert)
   │                                          │
-  │  设备用 AmazonRootCA1.pem 验证服务端证书    │
+  │  Device verifies server cert using       │
+  │  AmazonRootCA1.pem                       │
   │                                          │
-  │──── Client Cert + Signed Data ─────────►│  (设备出示客户端证书+私钥签名)
+  │──── Client Cert + Signed Data ─────────►│  (Device presents client cert + private key signature)
   │                                          │
-  │  IoT Core 验证客户端证书是否由其 CA 签发     │
-  │  IoT Core 根据证书关联的 Policy 做 ACL 鉴权  │
+  │  IoT Core verifies client cert was       │
+  │  issued by its CA, then applies IoT      │
+  │  Policy ACL based on the certificate     │
   │                                          │
   │◄─── TLS Established ───────────────────│
   │──── MQTT CONNECT ──────────────────────►│
@@ -58,47 +58,47 @@ Device                                    IoT Core
 ## Architecture
 
 ```
-┌─────────────┐   mTLS (证书+私钥)   ┌──────────────────┐
-│  EC2 Device  │◄──────────────────►│   AWS IoT Core    │
-│  Simulator   │                     │                   │
-│              │  Fleet Provision     │  ┌─────────────┐ │
-│  ┌────────┐  │  (Claim证书连接)     │  │ Provisioning│ │
-│  │ Web UI │  │◄───────────────────►│  │  Template   │ │
-│  └────────┘  │                     │  └──────┬──────┘ │
-└─────────────┘                     │         │        │
-                                     │  ┌──────▼──────┐ │
-                                     │  │   Lambda    │ │
-                                     │  │ Pre-Provision│ │
-                                     │  │    Hook     │ │
-                                     │  └─────────────┘ │
-                                     └──────────────────┘
+┌─────────────┐   mTLS (cert+key)    ┌──────────────────┐
+│  EC2 Device  │◄───────────────────►│   AWS IoT Core    │
+│  Simulator   │                      │                   │
+│              │  Fleet Provision      │  ┌─────────────┐ │
+│  ┌────────┐  │  (claim cert)        │  │ Provisioning│ │
+│  │ Web UI │  │◄────────────────────►│  │  Template   │ │
+│  └────────┘  │                      │  └──────┬──────┘ │
+└─────────────┘                      │         │        │
+                                      │  ┌──────▼──────┐ │
+                                      │  │   Lambda    │ │
+                                      │  │ Pre-Provision│ │
+                                      │  │    Hook     │ │
+                                      │  └─────────────┘ │
+                                      └──────────────────┘
 ```
 
-## 证书轮换流程
+## Certificate Rotation Flow
 
 ```
-1. 设备使用当前设备证书+私钥建立 mTLS 连接
-2. 通过 Fleet Provisioning MQTT API 请求新的密钥对和证书
-3. IoT Core 签发新证书，设备获得新的 cert + key
-4. 备份旧证书，原子性写入新证书和私钥
-5. 从 Thing 上 Detach 旧证书，然后 Revoke 旧证书
-6. 使用新证书+私钥重新建立 mTLS 连接
+1. Device connects using current device cert + private key (mTLS)
+2. Requests new key pair + certificate via Fleet Provisioning MQTT API
+3. IoT Core issues new certificate; device receives new cert + key
+4. Backs up old cert, atomically writes new cert and private key
+5. Detaches old cert from Thing, then revokes old cert
+6. Reconnects using new cert + private key (mTLS)
 ```
 
-### 自动轮换
+### Auto-Rotation
 
-后台线程定期检查设备证书的过期时间，当剩余有效期小于设定阈值时自动执行上述轮换流程：
+A background thread periodically checks the device certificate expiry and automatically rotates when the remaining validity falls below a configurable threshold:
 
 ```
 [Auto-Rotate Thread]
   │
-  ├── 每 N 小时检查一次证书过期时间
-  ├── 剩余 < M 天 → 自动执行轮换
-  │     ├── 断开当前连接
-  │     ├── 用当前证书做 Fleet Provisioning 获取新证书
-  │     ├── Detach + Revoke 旧证书
-  │     └── 用新证书重连
-  └── 剩余 >= M 天 → 跳过，等下次检查
+  ├── Check cert expiry every N hours
+  ├── Remaining < M days → auto-rotate
+  │     ├── Disconnect current connection
+  │     ├── Fleet Provision with current cert to get new cert
+  │     ├── Detach + Revoke old cert
+  │     └── Reconnect with new cert
+  └── Remaining >= M days → skip, wait for next check
 ```
 
 ## Prerequisites
@@ -144,37 +144,37 @@ SKIP_AUTH=1 python3 -c "from app import app; app.run(host='0.0.0.0', port=8080)"
 
 ### 4. Use the web UI
 
-1. **Provision** — 输入设备序列号，点击 "Provision Device"（使用 Claim 证书注册，获取设备证书）
-2. **Connect** — 点击 "Connect"（使用设备证书建立 mTLS 连接）
-3. **Pub/Sub** — 发布和订阅消息
-4. **Manual Rotate** — 先 Disconnect，再点击 "Rotate Certificate"
-5. **Auto-Rotate** — 设置检查间隔和提前天数，启动自动轮换
+1. **Provision** — Enter device serial, click "Provision Device" (uses claim cert, gets device cert)
+2. **Connect** — Click "Connect" (establishes mTLS connection with device cert)
+3. **Pub/Sub** — Publish and subscribe to messages
+4. **Manual Rotate** — Disconnect first, then click "Rotate Certificate"
+5. **Auto-Rotate** — Set check interval and threshold days, start auto-rotation
 
 ## IoT Policy ACL Design
 
-### Device Policy（绑定到设备证书）
-- `iot:Connect` — Client ID 必须等于 Thing Name
-- `iot:Publish/Subscribe/Receive` — 只允许 `device/{thingName}/*` + Fleet Provisioning topics
+### Device Policy (attached to device certificate)
+- `iot:Connect` — Client ID must equal Thing Name
+- `iot:Publish/Subscribe/Receive` — Only `device/{thingName}/*` + Fleet Provisioning topics
 
-### Claim Policy（绑定到 Claim 证书）
-- 只允许 Fleet Provisioning 相关 MQTT topics
-- 不允许访问任何业务 topic
+### Claim Policy (attached to claim certificate)
+- Only allows Fleet Provisioning MQTT topics
+- No access to any business topics
 
 ## Project Structure
 
 ```
-├── setup_iot.py          # 一键创建所有 AWS 资源 + 下载 Root CA
-├── device_client.py      # 设备客户端（mTLS连接、Fleet Provisioning、证书轮换）
-├── app.py                # Flask Web 服务 + REST API
-├── cleanup.py            # 一键清理所有 AWS 资源
-├── config.json           # 生成的配置（gitignored，含 endpoint 和证书路径）
+├── setup_iot.py          # One-click AWS resource creation + Root CA download
+├── device_client.py      # Device client (mTLS connection, Fleet Provisioning, cert rotation)
+├── app.py                # Flask web server + REST API
+├── cleanup.py            # One-click AWS resource cleanup
+├── config.json           # Generated config (gitignored, contains endpoint and cert paths)
 ├── templates/
 │   └── index.html        # Web UI
-├── certs/                # 证书和私钥目录（gitignored）
-│   ├── AmazonRootCA1.pem #   Amazon Root CA（公开）
-│   ├── claim.cert.pem    #   Claim 客户端证书（setup 生成）
-│   ├── claim.key.pem     #   Claim 私钥（setup 生成）
-│   └── device_xxx/       #   每个设备的证书+私钥（Fleet Provisioning 生成）
+├── certs/                # Certificates and private keys (gitignored)
+│   ├── AmazonRootCA1.pem #   Amazon Root CA (public)
+│   ├── claim.cert.pem    #   Claim client certificate (generated by setup)
+│   ├── claim.key.pem     #   Claim private key (generated by setup)
+│   └── device_xxx/       #   Per-device cert + key (generated by Fleet Provisioning)
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -204,9 +204,8 @@ Removes: Provisioning Template, Claim Certificate, IoT Policies, Lambda, IAM Rol
 - Private keys are stored with `0600` permissions
 - Certificate files are written atomically (temp file + rename) to prevent corruption
 - Old certificates are detached from Thing and revoked after rotation
-- Claim certificates should be rotated periodically in production
 - Token comparison uses `hmac.compare_digest` to prevent timing attacks
-- Serial number input is validated to prevent path traversal
+- Serial number input is validated with regex to prevent path traversal
 
 ## License
 

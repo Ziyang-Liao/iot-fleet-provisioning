@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-Cleanup all AWS IoT resources created by setup_iot.py.
+Cleanup Script for IoT Fleet Provisioning Demo.
+
+Removes all AWS resources created by setup_iot.py:
+- Provisioning Template (all versions)
+- Claim Certificate (detach, revoke, delete)
+- IoT Policies (DevicePolicy, ClaimPolicy)
+- Lambda function (pre-provision hook)
+- IAM Roles (Lambda role, IoT provisioning role)
+- Thing Group
+
+Safe to run multiple times (idempotent).
 """
 import json, os, boto3
 
@@ -12,6 +22,7 @@ iot = boto3.client("iot", region_name=REGION)
 iam = boto3.client("iam")
 lambda_client = boto3.client("lambda", region_name=REGION)
 
+# Resource names (must match setup_iot.py)
 TEMPLATE_NAME = "CertRotationTemplate"
 DEVICE_POLICY = "DevicePolicy"
 CLAIM_POLICY = "ClaimPolicy"
@@ -22,6 +33,7 @@ THING_GROUP = "fleet-devices"
 
 
 def safe(fn, *args, **kwargs):
+    """Execute function, catch and print any errors (for idempotent cleanup)."""
     try:
         fn(*args, **kwargs)
         return True
