@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IoT Fleet Provisioning Demo</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1923;color:#e0e0e0;padding:20px}
+h1{text-align:center;color:#ff9900;margin-bottom:20px;font-size:1.5em}
+.container{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:340px 1fr;gap:20px}
+.panel{background:#1a2332;border:1px solid #2a3a4a;border-radius:8px;padding:16px}
+.panel h2{color:#ff9900;font-size:1.1em;margin-bottom:12px;border-bottom:1px solid #2a3a4a;padding-bottom:8px}
+label{display:block;font-size:.85em;color:#8899aa;margin-bottom:4px;margin-top:10px}
+input,textarea,select{width:100%;padding:8px 10px;background:#0f1923;border:1px solid #2a3a4a;border-radius:4px;color:#e0e0e0;font-size:.9em}
+textarea{height:60px;resize:vertical;font-family:monospace}
+.btn{display:inline-block;padding:8px 16px;border:none;border-radius:4px;cursor:pointer;font-size:.85em;margin:4px 4px 4px 0;transition:opacity .2s}
+.btn:hover{opacity:.85}
+.btn-primary{background:#ff9900;color:#000}
+.btn-success{background:#2ecc71;color:#fff}
+.btn-danger{background:#e74c3c;color:#fff}
+.btn-info{background:#3498db;color:#fff}
+.btn-warning{background:#f39c12;color:#fff}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.status-bar{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.badge{padding:4px 10px;border-radius:12px;font-size:.75em;font-weight:600}
+.badge-on{background:#2ecc71;color:#fff}
+.badge-off{background:#555;color:#aaa}
+.badge-cert{background:#3498db;color:#fff}
+#log{background:#0a1018;border:1px solid #2a3a4a;border-radius:4px;padding:10px;height:420px;overflow-y:auto;font-family:'Courier New',monospace;font-size:.78em;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.log-entry{border-bottom:1px solid #151f2a;padding:2px 0}
+.section{margin-top:16px;padding-top:12px;border-top:1px solid #2a3a4a}
+.cert-item{background:#0f1923;border:1px solid #2a3a4a;border-radius:4px;padding:8px;margin:4px 0;font-size:.8em;font-family:monospace}
+.cert-item .time{color:#8899aa;font-size:.85em}
+.actions{display:flex;flex-wrap:wrap;gap:4px}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff3;border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;margin-right:6px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<h1>🔐 IoT Core Fleet Provisioning & Certificate Rotation</h1>
+<div class="container">
+  <div>
+    <div class="panel">
+      <h2>📱 Device Control</h2>
+      <label>Device Serial Number</label>
+      <input id="serial" value="device-001" placeholder="e.g. device-001">
+      <div class="status-bar" id="statusBar">
+        <span class="badge badge-off" id="badgeConn">Disconnected</span>
+        <span class="badge badge-off" id="badgeCert">No Cert</span>
+      </div>
+      <div class="section">
+        <h2>1️⃣ Fleet Provisioning</h2>
+        <p style="font-size:.8em;color:#8899aa;margin:6px 0">Use claim certificate to provision device and get device certificate</p>
+        <button class="btn btn-primary" onclick="doAction('provision')">🚀 Provision Device</button>
+      </div>
+      <div class="section">
+        <h2>2️⃣ MQTT Connection</h2>
+        <div class="actions">
+          <button class="btn btn-success" onclick="doAction('connect')" id="btnConnect">🔗 Connect</button>
+          <button class="btn btn-danger" onclick="doAction('disconnect')" id="btnDisconnect">⛓️‍💥 Disconnect</button>
+        </div>
+      </div>
+      <div class="section">
+        <h2>3️⃣ Pub / Sub</h2>
+        <label>Topic</label>
+        <input id="topic" value="device/device-001/telemetry">
+        <label>Payload (JSON)</label>
+        <textarea id="payload">{"temperature": 25.5, "humidity": 60}</textarea>
+        <div class="actions" style="margin-top:8px">
+          <button class="btn btn-info" onclick="doPublish()">📤 Publish</button>
+          <button class="btn btn-warning" onclick="doSubscribe()">📥 Subscribe</button>
+        </div>
+      </div>
+      <div class="section">
+        <h2>4️⃣ Certificate Rotation</h2>
+        <p style="font-size:.8em;color:#8899aa;margin:6px 0">Use current device cert to request new cert, then revoke old one</p>
+        <button class="btn btn-danger" onclick="doAction('rotate')">🔄 Manual Rotate</button>
+        <div style="margin-top:10px">
+          <label>Auto-Rotate: check interval (hours)</label>
+          <input id="checkHours" value="24" style="width:80px;display:inline" type="number">
+          <label>Rotate when cert expires within (days)</label>
+          <input id="rotateDays" value="30" style="width:80px;display:inline" type="number">
+          <div class="actions" style="margin-top:6px">
+            <button class="btn btn-primary" onclick="doAutoRotate('start')">⏰ Start Auto-Rotate</button>
+            <button class="btn btn-danger" onclick="doAutoRotate('stop')">⏹ Stop</button>
+          </div>
+          <span class="badge badge-off" id="badgeAuto" style="margin-top:6px">Auto-Rotate Off</span>
+        </div>
+      </div>
+      <div class="section" id="certHistory">
+        <h2>📜 Certificate History</h2>
+        <div id="certList"><span style="color:#555">No certificates yet</span></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div class="panel" style="height:100%">
+      <h2>📋 Logs <button class="btn btn-info" style="float:right;padding:2px 10px;font-size:.75em" onclick="document.getElementById('log').innerHTML=''">Clear</button></h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let polling = null;
+
+function serial() { return $('serial').value.trim(); }
+
+function log(msg, cls) {
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.textContent = msg;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+async function api(path, body) {
+  try {
+    const opts = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+    if (!body && path.includes('?')) opts.method = 'GET';
+    const r = await fetch('/api/' + path, opts);
+    const d = await r.json();
+    if (d.error) { log('❌ ERROR: ' + d.error); return null; }
+    return d;
+  } catch(e) { log('❌ ' + e.message); return null; }
+}
+
+let busy = false;
+async function doAction(action) {
+  if (busy) return;
+  const s = serial();
+  if (!s) { log('⚠️ Enter serial number first'); return; }
+  busy = true;
+  document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  log(`⏳ ${action}...`);
+  try {
+    const d = await api(action, {serial: s});
+    if (d) {
+      log(`✅ ${action} success` + (d.cert_id ? ` (cert: ${d.cert_id.substring(0,16)}...)` : ''));
+      if (d.status) updateStatus(d.status);
+    }
+    refreshLogs();
+  } finally {
+    busy = false;
+    document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+  }
+}
+
+async function doPublish() {
+  const s = serial(), t = $('topic').value.trim(), p = $('payload').value.trim();
+  if (!s||!t) { log('⚠️ Need serial and topic'); return; }
+  log(`📤 Publishing to ${t}...`);
+  const d = await api('publish', {serial:s, topic:t, payload:p});
+  if (d) log('✅ Published');
+  refreshLogs();
+}
+
+async function doSubscribe() {
+  const s = serial(), t = $('topic').value.trim();
+  if (!s||!t) { log('⚠️ Need serial and topic'); return; }
+  log(`📥 Subscribing to ${t}...`);
+  const d = await api('subscribe', {serial:s, topic:t});
+  if (d) log('✅ Subscribed');
+  refreshLogs();
+}
+
+function updateStatus(st) {
+  $('badgeConn').textContent = st.connected ? 'Connected' : 'Disconnected';
+  $('badgeConn').className = 'badge ' + (st.connected ? 'badge-on' : 'badge-off');
+  $('badgeCert').textContent = st.has_cert ? `Cert #${st.cert_count}` : 'No Cert';
+  $('badgeCert').className = 'badge ' + (st.has_cert ? 'badge-cert' : 'badge-off');
+  $('badgeAuto').textContent = st.auto_rotate ? `Auto-Rotate On (${st.rotate_interval_hours}h)` : 'Auto-Rotate Off';
+  $('badgeAuto').className = 'badge ' + (st.auto_rotate ? 'badge-on' : 'badge-off');
+  if (st.cert_history && st.cert_history.length) {
+    $('certList').innerHTML = st.cert_history.map((c,i) =>
+      `<div class="cert-item">#${i+1} <span style="color:#ff9900">${c.cert_id.substring(0,24)}...</span><br><span class="time">${c.created_at}</span></div>`
+    ).join('');
+  }
+}
+
+async function doAutoRotate(action) {
+  const s = serial();
+  if (!s) { log('⚠️ Enter serial number first'); return; }
+  const hours = parseInt($('checkHours').value) || 24;
+  const days = parseInt($('rotateDays').value) || 30;
+  log(`⏳ Auto-rotate ${action}...`);
+  const d = await api('auto_rotate', {serial:s, action, check_hours:hours, rotate_before_days:days});
+  if (d) {
+    log(`✅ Auto-rotate ${action}`);
+    if (d.status) updateStatus(d.status);
+  }
+}
+
+let lastLogCount = 0;
+async function refreshLogs() {
+  const s = serial();
+  if (!s) return;
+  const d = await api(`status?serial=${s}`);
+  if (d) {
+    updateStatus(d.status);
+    const serverLen = d.logs.length;
+    // 服务端只保留最近 50 条，如果 lastLogCount 超出则重置
+    if (lastLogCount > serverLen) lastLogCount = 0;
+    const newLogs = d.logs.slice(lastLogCount);
+    newLogs.forEach(l => log(l));
+    lastLogCount = serverLen;
+  }
+}
+
+$('serial').addEventListener('change', () => {
+  $('topic').value = `device/${serial()}/telemetry`;
+  $('log').innerHTML = '';
+  $('certList').innerHTML = '<span style="color:#555">No certificates yet</span>';
+  $('badgeConn').textContent = 'Disconnected';
+  $('badgeConn').className = 'badge badge-off';
+  $('badgeCert').textContent = 'No Cert';
+  $('badgeCert').className = 'badge badge-off';
+  lastLogCount = 0;
+  refreshLogs();
+});
+
+setInterval(refreshLogs, 5000);
+</script>
+</body>
+</html>
