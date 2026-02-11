@@ -1,5 +1,9 @@
 # AWS IoT Core Fleet Provisioning & Certificate Auto-Rotation Demo
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![AWS IoT](https://img.shields.io/badge/AWS-IoT_Core-orange.svg)](https://aws.amazon.com/iot-core/)
+
 A complete solution for automatic device certificate rotation using AWS IoT Core Fleet Provisioning with mTLS (X.509 client certificate + private key) mutual authentication, including a web-based testing UI.
 
 ## Features
